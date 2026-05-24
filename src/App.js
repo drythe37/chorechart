@@ -40,7 +40,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   // Parent state
-  const [choreForm, setChoreForm] = useState({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠" });
+  const [choreForm, setChoreForm] = useState({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠", recurring:true });
   const [editingChore, setEditingChore] = useState(null);
   const [showChoreForm, setShowChoreForm] = useState(false);
   const [rejectModal, setRejectModal] = useState(null); // comp object
@@ -230,7 +230,7 @@ export default function App() {
         await addDoc(collection(db, "chores"), { ...data, createdAt: serverTimestamp() });
         showToast("Chore added ✓");
       }
-      setChoreForm({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠" });
+      setChoreForm({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠", recurring:true });
       setEditingChore(null);
       setShowChoreForm(false);
     } catch { showToast("Something went wrong","error"); }
@@ -243,7 +243,7 @@ export default function App() {
   };
 
   const handleEditChore = (chore) => {
-    setChoreForm({ name:chore.name, points:chore.points.toString(), type:chore.type, assignedTo:chore.assignedTo||"", emoji:chore.emoji||"🏠" });
+    setChoreForm({ name:chore.name, points:chore.points.toString(), type:chore.type, assignedTo:chore.assignedTo||"", emoji:chore.emoji||"🏠", recurring:chore.recurring!==false });
     setEditingChore(chore.id);
     setShowChoreForm(true);
   };
@@ -257,9 +257,14 @@ export default function App() {
   const kid = kidEmail ? getKid(kidEmail) : null;
   const kidPoints = kidEmail ? (points[kidEmail] || 0) : 0;
 
-  const myChores = kid ? chores.filter(c =>
-    c.type === "shared" || (c.type === "personal" && c.assignedTo === kid.name)
-  ) : [];
+  const myChores = kid ? chores.filter(c => {
+    const isForMe = c.type === "shared" || (c.type === "personal" && c.assignedTo === kid.name);
+    if (!isForMe) return false;
+    if (c.recurring !== false) return true; // recurring = always show
+    // one-off: only show if added today
+    if (c.date === TODAY()) return true;
+    return false;
+  }) : [];
 
   const choreStatus = (choreId) => {
     const comp = todayCompletions.find(c => c.choreId === choreId && c.status !== "rejected");
@@ -381,7 +386,7 @@ export default function App() {
         <div style={S.manageHeader}>
           <button style={S.backBtn} onClick={() => { setView("dashboard"); setShowChoreForm(false); }}>← Back</button>
           <div style={S.manageTitle}>Manage Chores</div>
-          <button style={S.addChoreIconBtn} onClick={() => { setShowChoreForm(true); setEditingChore(null); setChoreForm({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠" }); }}>+</button>
+          <button style={S.addChoreIconBtn} onClick={() => { setShowChoreForm(true); setEditingChore(null); setChoreForm({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠", recurring:true }); }}>+</button>
         </div>
         <div style={S.main}>
           {showChoreForm && (
@@ -416,6 +421,15 @@ export default function App() {
                   ))}
                 </div>
               </>)}
+              <div style={S.recurringRow} onClick={() => setChoreForm(f=>({...f,recurring:!f.recurring}))}>
+                <div style={{...S.checkbox,...(choreForm.recurring?S.checkboxActive:{})}}>
+                  {choreForm.recurring && <span style={{color:"#fff",fontSize:12,fontWeight:800}}>✓</span>}
+                </div>
+                <div>
+                  <div style={S.recurringLabel}>Recurring daily chore</div>
+                  <div style={S.recurringSub}>Appears every day automatically</div>
+                </div>
+              </div>
               <button style={{...S.saveChoreBtn,opacity:loading?0.7:1}} onClick={handleSaveChore} disabled={loading}>
                 {loading?"Saving…":editingChore?"Save Changes":"Add Chore"}
               </button>
@@ -428,7 +442,7 @@ export default function App() {
                   <div style={S.choreManageEmoji}>{chore.emoji || "🏠"}</div>
                   <div>
                     <div style={S.choreManageName}>{chore.name}</div>
-                    <div style={S.choreManageMeta}>{chore.type==="shared" ? "Shared · First to do it wins" : `Personal · ${chore.assignedTo}`}</div>
+                    <div style={S.choreManageMeta}>{chore.type==="shared" ? "Shared · First to do it wins" : `Personal · ${chore.assignedTo}`} · {chore.recurring!==false ? "🔄 Daily" : "1️⃣ One-off"}</div>
                   </div>
                 </div>
                 <div style={S.choreManageRight}>
@@ -764,4 +778,9 @@ const S = {
   toast:{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:"#7C3AED",color:"#fff",borderRadius:10,padding:"12px 20px",fontSize:14,fontWeight:600,zIndex:999,boxShadow:"0 4px 20px rgba(0,0,0,0.5)",maxWidth:"90vw",textAlign:"center"},
   toastErr:{background:"#dc2626"},
   toastInfo:{background:"#1e1b2e",border:"1px solid #2D2B3D",color:"#9ca3af"},
+  recurringRow:{display:"flex",alignItems:"center",gap:12,marginTop:16,padding:"12px 14px",background:"#13111C",border:"1px solid #2D2B3D",borderRadius:10,cursor:"pointer"},
+  checkbox:{width:22,height:22,borderRadius:6,border:"2px solid #2D2B3D",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,background:"#13111C"},
+  checkboxActive:{background:"#7C3AED",borderColor:"#7C3AED"},
+  recurringLabel:{fontSize:14,fontWeight:600,color:"#f0f0f0"},
+  recurringSub:{fontSize:11,color:"#6b7280",marginTop:2},
 };
