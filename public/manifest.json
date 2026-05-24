@@ -1,0 +1,8 @@
+{
+  "short_name": "ChoreChart",
+  "name": "ChoreChart — Family Chore Tracker",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#13111C",
+  "theme_color": "#13111C"
+}
