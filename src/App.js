@@ -40,7 +40,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   // Parent state
-  const [choreForm, setChoreForm] = useState({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠", recurring:true });
+  const [choreForm, setChoreForm] = useState({ name:"", points:"2", type:"personal", assignedTo:[], emoji:"🏠", recurring:true });
   const [editingChore, setEditingChore] = useState(null);
   const [showChoreForm, setShowChoreForm] = useState(false);
   const [rejectModal, setRejectModal] = useState(null); // comp object
@@ -224,13 +224,21 @@ export default function App() {
     try {
       const data = { ...choreForm, points: pts };
       if (editingChore) {
+        // For editing personal multi-kid chores, update assignedTo as array
         await updateDoc(doc(db, "chores", editingChore), data);
         showToast("Chore updated ✓");
+      } else if (choreForm.type === "personal" && Array.isArray(choreForm.assignedTo) && choreForm.assignedTo.length > 1) {
+        // Create one chore per selected kid
+        for (const kidName of choreForm.assignedTo) {
+          await addDoc(collection(db, "chores"), { ...data, assignedTo: kidName, createdAt: serverTimestamp() });
+        }
+        showToast(`Chore added for ${choreForm.assignedTo.join(", ")} ✓`);
       } else {
-        await addDoc(collection(db, "chores"), { ...data, createdAt: serverTimestamp() });
+        const singleAssign = Array.isArray(choreForm.assignedTo) ? (choreForm.assignedTo[0] || "") : choreForm.assignedTo;
+        await addDoc(collection(db, "chores"), { ...data, assignedTo: singleAssign, createdAt: serverTimestamp() });
         showToast("Chore added ✓");
       }
-      setChoreForm({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠", recurring:true });
+      setChoreForm({ name:"", points:"2", type:"personal", assignedTo:[], emoji:"🏠", recurring:true });
       setEditingChore(null);
       setShowChoreForm(false);
     } catch { showToast("Something went wrong","error"); }
@@ -243,7 +251,7 @@ export default function App() {
   };
 
   const handleEditChore = (chore) => {
-    setChoreForm({ name:chore.name, points:chore.points.toString(), type:chore.type, assignedTo:chore.assignedTo||"", emoji:chore.emoji||"🏠", recurring:chore.recurring!==false });
+    setChoreForm({ name:chore.name, points:chore.points.toString(), type:chore.type, assignedTo:Array.isArray(chore.assignedTo)?chore.assignedTo:(chore.assignedTo?[chore.assignedTo]:[]), emoji:chore.emoji||"🏠", recurring:chore.recurring!==false });
     setEditingChore(chore.id);
     setShowChoreForm(true);
   };
@@ -258,7 +266,8 @@ export default function App() {
   const kidPoints = kidEmail ? (points[kidEmail] || 0) : 0;
 
   const myChores = kid ? chores.filter(c => {
-    const isForMe = c.type === "shared" || (c.type === "personal" && c.assignedTo === kid.name);
+    const assignedTo = Array.isArray(c.assignedTo) ? c.assignedTo : (c.assignedTo ? [c.assignedTo] : []);
+    const isForMe = c.type === "shared" || (c.type === "personal" && assignedTo.includes(kid.name));
     if (!isForMe) return false;
     if (c.recurring !== false) return true; // recurring = always show
     // one-off: only show if added today
@@ -386,7 +395,7 @@ export default function App() {
         <div style={S.manageHeader}>
           <button style={S.backBtn} onClick={() => { setView("dashboard"); setShowChoreForm(false); }}>← Back</button>
           <div style={S.manageTitle}>Manage Chores</div>
-          <button style={S.addChoreIconBtn} onClick={() => { setShowChoreForm(true); setEditingChore(null); setChoreForm({ name:"", points:"2", type:"personal", assignedTo:"", emoji:"🏠", recurring:true }); }}>+</button>
+          <button style={S.addChoreIconBtn} onClick={() => { setShowChoreForm(true); setEditingChore(null); setChoreForm({ name:"", points:"2", type:"personal", assignedTo:[], emoji:"🏠", recurring:true }); }}>+</button>
         </div>
         <div style={S.main}>
           {showChoreForm && (
@@ -413,13 +422,23 @@ export default function App() {
                   onClick={() => setChoreForm(f=>({...f,type:"shared"}))}>Shared (first wins)</button>
               </div>
               {choreForm.type === "personal" && (<>
-                <label style={S.label}>Assign to</label>
+                <label style={S.label}>Assign to (tap to select, tap again to deselect)</label>
                 <div style={S.typeRow}>
-                  {KIDS.map(k => (
-                    <button key={k.name} style={{...S.typeBtn,...(choreForm.assignedTo===k.name?{...S.typeBtnActive,background:k.color+"33",borderColor:k.color,color:k.color}:{})}}
-                      onClick={() => setChoreForm(f=>({...f,assignedTo:k.name}))}>{k.name}</button>
-                  ))}
+                  {KIDS.map(k => {
+                    const selected = Array.isArray(choreForm.assignedTo) ? choreForm.assignedTo.includes(k.name) : choreForm.assignedTo === k.name;
+                    return (
+                      <button key={k.name} style={{...S.typeBtn,...(selected?{...S.typeBtnActive,background:k.color+"33",borderColor:k.color,color:k.color}:{})}}
+                        onClick={() => setChoreForm(f => {
+                          const current = Array.isArray(f.assignedTo) ? f.assignedTo : (f.assignedTo ? [f.assignedTo] : []);
+                          const next = current.includes(k.name) ? current.filter(n => n !== k.name) : [...current, k.name];
+                          return {...f, assignedTo: next};
+                        })}>{k.name}</button>
+                    );
+                  })}
                 </div>
+                {Array.isArray(choreForm.assignedTo) && choreForm.assignedTo.length > 1 && (
+                  <div style={S.multiNote}>Will create a separate chore for each selected child</div>
+                )}
               </>)}
               <div style={S.recurringRow} onClick={() => setChoreForm(f=>({...f,recurring:!f.recurring}))}>
                 <div style={{...S.checkbox,...(choreForm.recurring?S.checkboxActive:{})}}>
@@ -442,7 +461,7 @@ export default function App() {
                   <div style={S.choreManageEmoji}>{chore.emoji || "🏠"}</div>
                   <div>
                     <div style={S.choreManageName}>{chore.name}</div>
-                    <div style={S.choreManageMeta}>{chore.type==="shared" ? "Shared · First to do it wins" : `Personal · ${chore.assignedTo}`} · {chore.recurring!==false ? "🔄 Daily" : "1️⃣ One-off"}</div>
+                    <div style={S.choreManageMeta}>{chore.type==="shared" ? "Shared · First to do it wins" : `Personal · ${Array.isArray(chore.assignedTo)?chore.assignedTo.join(", "):chore.assignedTo}`} · {chore.recurring!==false ? "🔄 Daily" : "1️⃣ One-off"}</div>
                   </div>
                 </div>
                 <div style={S.choreManageRight}>
@@ -783,4 +802,5 @@ const S = {
   checkboxActive:{background:"#7C3AED",borderColor:"#7C3AED"},
   recurringLabel:{fontSize:14,fontWeight:600,color:"#f0f0f0"},
   recurringSub:{fontSize:11,color:"#6b7280",marginTop:2},
+  multiNote:{fontSize:11,color:"#a78bfa",marginTop:6,textAlign:"center"},
 };
