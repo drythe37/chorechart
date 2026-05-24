@@ -3,7 +3,7 @@ import { auth, googleProvider, db, storage } from "./firebase";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import {
   collection, addDoc, deleteDoc, updateDoc, doc,
-  onSnapshot, query, orderBy, serverTimestamp, where, getDocs
+  onSnapshot, query, orderBy, serverTimestamp, where, setDoc
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { PARENT_EMAILS, KIDS, POINTS_FOR_REWARD, REWARD_AMOUNT } from "./config";
@@ -41,12 +41,10 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Parent state
   const [choreForm, setChoreForm] = useState({ name:"", points:2, type:"personal", assignedTo:"", emoji:"🏠" });
   const [editingChore, setEditingChore] = useState(null);
   const [showChoreForm, setShowChoreForm] = useState(false);
 
-  // Kid state
   const [photoUploading, setPhotoUploading] = useState(null);
   const fileRef = useRef(null);
   const [pendingChoreId, setPendingChoreId] = useState(null);
@@ -56,21 +54,18 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Load chores
   useEffect(() => {
     if (!user) return;
     const q = query(collection(db, "chores"), orderBy("createdAt", "asc"));
     return onSnapshot(q, snap => setChores(snap.docs.map(d => ({ id:d.id, ...d.data() }))));
   }, [user]);
 
-  // Load today's completions
   useEffect(() => {
     if (!user) return;
     const q = query(collection(db, "completions"), where("date", "==", TODAY()));
     return onSnapshot(q, snap => setCompletions(snap.docs.map(d => ({ id:d.id, ...d.data() }))));
   }, [user]);
 
-  // Load points per kid
   useEffect(() => {
     if (!user) return;
     const q = query(collection(db, "points"));
@@ -93,7 +88,6 @@ export default function App() {
 
   const handleSignOut = () => signOut(auth);
 
-  // Kid marks chore done — upload photo
   const handleMarkDone = (choreId) => {
     setPendingChoreId(choreId);
     fileRef.current?.click();
@@ -130,19 +124,11 @@ export default function App() {
     e.target.value = "";
   };
 
-  // Parent approve/reject
   const handleApprove = async (comp) => {
     await updateDoc(doc(db, "completions", comp.id), { status:"approved" });
-    // Add points
     const kidEmail = comp.kidEmail;
-    const ptRef = doc(db, "points", kidEmail);
-    const current = points[kidEmail] || 0;
-    await updateDoc(ptRef, { total: current + comp.points }).catch(async () => {
-      await addDoc(collection(db, "points"), { total: comp.points });
-    });
-    // Use set instead
-    const { setDoc } = await import("firebase/firestore");
-    await setDoc(doc(db, "points", kidEmail), { total: (points[kidEmail]||0) + comp.points });
+    const newTotal = (points[kidEmail] || 0) + comp.points;
+    await setDoc(doc(db, "points", kidEmail), { total: newTotal });
     showToast(`✓ Approved! +${comp.points} pts for ${comp.kidName}`);
   };
 
@@ -151,7 +137,6 @@ export default function App() {
     showToast(`Rejected — ${comp.kidName} will need to redo this`,"info");
   };
 
-  // Parent chore management
   const handleSaveChore = async () => {
     if (!choreForm.name.trim()) { showToast("Enter a chore name","error"); return; }
     setLoading(true);
@@ -181,7 +166,6 @@ export default function App() {
     setShowChoreForm(true);
   };
 
-  // Derived data
   const todayCompletions = completions.filter(c => c.date === TODAY());
   const pendingApprovals = todayCompletions.filter(c => c.status === "pending");
   const approvedToday = todayCompletions.filter(c => c.status === "approved");
@@ -190,17 +174,15 @@ export default function App() {
   const kid = kidEmail ? getKid(kidEmail) : null;
   const kidPoints = kidEmail ? (points[kidEmail] || 0) : 0;
 
-  // Get chores visible to this kid
   const myChores = kid ? chores.filter(c =>
     c.type === "shared" || (c.type === "personal" && c.assignedTo === kid.name)
   ) : [];
 
-  // Check if chore is done today by anyone (shared) or by this kid (personal)
   const choreStatus = (choreId) => {
     const comp = todayCompletions.find(c => c.choreId === choreId);
     if (!comp) return "available";
     if (comp.kidEmail === kidEmail) return comp.status === "approved" ? "approved" : "pending";
-    return "claimed"; // claimed by sibling
+    return "claimed";
   };
 
   if (authLoading) return (
@@ -240,11 +222,90 @@ export default function App() {
 
   // ── PARENT VIEW ──
   if (isParent(user.email)) {
-    const totalToday = chores.length * KIDS.length;
+
+    // ── MANAGE CHORES (inside parent block so view state works) ──
+    if (view === "manage") return (
+      <div style={S.root}>
+        {toast && <div style={{...S.toast,...(toast.type==="error"?S.toastErr:toast.type==="info"?S.toastInfo:{})}}>{toast.msg}</div>}
+        <div style={S.manageHeader}>
+          <button style={S.backBtn} onClick={() => { setView("dashboard"); setShowChoreForm(false); }}>← Back</button>
+          <div style={S.manageTitle}>Manage Chores</div>
+          <button style={S.addChoreIconBtn} onClick={() => { setShowChoreForm(true); setEditingChore(null); setChoreForm({ name:"", points:2, type:"personal", assignedTo:"", emoji:"🏠" }); }}>+</button>
+        </div>
+        <div style={S.main}>
+          {showChoreForm && (
+            <div style={S.choreFormCard}>
+              <div style={S.choreFormTitle}>{editingChore ? "Edit Chore" : "Add New Chore"}</div>
+              <label style={S.label}>Chore name</label>
+              <input style={S.input} placeholder="e.g. Tidy bedroom" value={choreForm.name}
+                onChange={e => setChoreForm(f=>({...f,name:e.target.value}))} />
+              <label style={S.label}>Emoji</label>
+              <div style={S.emojiRow}>
+                {["🛏️","🧹","🍽️","🧺","🗑️","🐾","🌿","✨","🧼","🏠"].map(em => (
+                  <button key={em} style={{...S.emojiBtn,...(choreForm.emoji===em?S.emojiBtnActive:{})}}
+                    onClick={() => setChoreForm(f=>({...f,emoji:em}))}>{em}</button>
+                ))}
+              </div>
+              <label style={S.label}>Points</label>
+              <div style={S.pointsRow}>
+                {[1,2,3,4,5].map(p => (
+                  <button key={p} style={{...S.pointsBtn,...(choreForm.points===p?S.pointsBtnActive:{})}}
+                    onClick={() => setChoreForm(f=>({...f,points:p}))}>{p}</button>
+                ))}
+              </div>
+              <label style={S.label}>Type</label>
+              <div style={S.typeRow}>
+                <button style={{...S.typeBtn,...(choreForm.type==="personal"?S.typeBtnActive:{})}}
+                  onClick={() => setChoreForm(f=>({...f,type:"personal"}))}>Personal</button>
+                <button style={{...S.typeBtn,...(choreForm.type==="shared"?S.typeBtnActive:{})}}
+                  onClick={() => setChoreForm(f=>({...f,type:"shared"}))}>Shared (first wins)</button>
+              </div>
+              {choreForm.type === "personal" && (
+                <>
+                  <label style={S.label}>Assign to</label>
+                  <div style={S.typeRow}>
+                    {KIDS.map(k => (
+                      <button key={k.name} style={{...S.typeBtn,...(choreForm.assignedTo===k.name?{...S.typeBtnActive,background:k.color+"33",borderColor:k.color,color:k.color}:{})}}
+                        onClick={() => setChoreForm(f=>({...f,assignedTo:k.name}))}>{k.name}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+              <button style={{...S.saveChoreBtn,opacity:loading?0.7:1}} onClick={handleSaveChore} disabled={loading}>
+                {loading?"Saving…":editingChore?"Save Changes":"Add Chore"}
+              </button>
+            </div>
+          )}
+          <div style={S.choreList}>
+            {chores.map(chore => (
+              <div key={chore.id} style={S.choreManageCard}>
+                <div style={S.choreManageLeft}>
+                  <div style={S.choreManageEmoji}>{chore.emoji || "🏠"}</div>
+                  <div>
+                    <div style={S.choreManageName}>{chore.name}</div>
+                    <div style={S.choreManageMeta}>
+                      {chore.type==="shared" ? "Shared · First to do it wins" : `Personal · ${chore.assignedTo}`}
+                    </div>
+                  </div>
+                </div>
+                <div style={S.choreManageRight}>
+                  <div style={S.pointsBadge}>{chore.points} pts</div>
+                  <button style={S.editIconBtn} onClick={() => handleEditChore(chore)}>✏️</button>
+                  <button style={S.deleteIconBtn} onClick={() => handleDeleteChore(chore.id)}>🗑️</button>
+                </div>
+              </div>
+            ))}
+            {chores.length === 0 && <div style={{textAlign:"center",padding:"40px 20px",color:"#6b7280",fontSize:14}}>No chores yet — tap + to add some!</div>}
+          </div>
+          <div style={{height:20}} />
+        </div>
+      </div>
+    );
+
+    // ── PARENT DASHBOARD ──
     return (
       <div style={S.root}>
         {toast && <div style={{...S.toast,...(toast.type==="error"?S.toastErr:toast.type==="info"?S.toastInfo:{})}}>{toast.msg}</div>}
-
         <header style={S.header}>
           <div style={S.headerRow}>
             <div style={S.headerTitle}><span style={S.purple}>Chore</span><span style={S.gold}>Chart</span></div>
@@ -255,9 +316,7 @@ export default function App() {
           </div>
           <div style={S.parentSub}>Parent View · Hi {user.displayName?.split(" ")[0]} 👋</div>
         </header>
-
         <main style={S.main}>
-          {/* Stats row */}
           <div style={S.statsRow}>
             <div style={S.statCard}>
               <div style={S.statIcon}>📋</div>
@@ -276,12 +335,10 @@ export default function App() {
             </div>
           </div>
 
-          {/* Kids overview */}
           <div style={S.sectionTitle}>Kids Overview</div>
           {KIDS.map(k => {
             const kDone = approvedToday.filter(c => c.kidEmail === k.email).length;
             const kPending = pendingApprovals.filter(c => c.kidEmail === k.email).length;
-            const kChores = chores.filter(c => c.type==="shared" || c.assignedTo===k.name).length;
             const kPts = points[k.email] || 0;
             return (
               <div key={k.email} style={S.kidCard}>
@@ -301,7 +358,6 @@ export default function App() {
             );
           })}
 
-          {/* Pending approvals */}
           {pendingApprovals.length > 0 && (<>
             <div style={S.sectionTitle}>Pending Approvals</div>
             {pendingApprovals.map(comp => {
@@ -332,113 +388,28 @@ export default function App() {
             })}
           </>)}
 
-          {/* Manage chores button */}
           <button style={S.manageBtn} onClick={() => setView("manage")}>⚙️ Manage / Add Chores</button>
-
           <div style={{height:20}} />
         </main>
       </div>
     );
   }
 
-  // ── MANAGE CHORES VIEW (parent) ──
-  if (view === "manage") return (
-    <div style={S.root}>
-      {toast && <div style={{...S.toast,...(toast.type==="error"?S.toastErr:toast.type==="info"?S.toastInfo:{})}}>{toast.msg}</div>}
-      <div style={S.manageHeader}>
-        <button style={S.backBtn} onClick={() => { setView("dashboard"); setShowChoreForm(false); }}>← Back</button>
-        <div style={S.manageTitle}>Manage Chores</div>
-        <button style={S.addChoreIconBtn} onClick={() => { setShowChoreForm(true); setEditingChore(null); setChoreForm({ name:"", points:2, type:"personal", assignedTo:"", emoji:"🏠" }); }}>+</button>
-      </div>
-      <div style={S.main}>
-        {showChoreForm && (
-          <div style={S.choreFormCard}>
-            <div style={S.choreFormTitle}>{editingChore ? "Edit Chore" : "Add New Chore"}</div>
-            <label style={S.label}>Chore name</label>
-            <input style={S.input} placeholder="e.g. Tidy bedroom" value={choreForm.name}
-              onChange={e => setChoreForm(f=>({...f,name:e.target.value}))} />
-            <label style={S.label}>Emoji</label>
-            <div style={S.emojiRow}>
-              {["🛏️","🧹","🍽️","🧺","🗑️","🐾","🌿","✨","🧼","🏠"].map(em => (
-                <button key={em} style={{...S.emojiBtn,...(choreForm.emoji===em?S.emojiBtnActive:{})}}
-                  onClick={() => setChoreForm(f=>({...f,emoji:em}))}>{em}</button>
-              ))}
-            </div>
-            <label style={S.label}>Points</label>
-            <div style={S.pointsRow}>
-              {[1,2,3,4,5].map(p => (
-                <button key={p} style={{...S.pointsBtn,...(choreForm.points===p?S.pointsBtnActive:{})}}
-                  onClick={() => setChoreForm(f=>({...f,points:p}))}>{p}</button>
-              ))}
-            </div>
-            <label style={S.label}>Type</label>
-            <div style={S.typeRow}>
-              <button style={{...S.typeBtn,...(choreForm.type==="personal"?S.typeBtnActive:{})}}
-                onClick={() => setChoreForm(f=>({...f,type:"personal"}))}>Personal</button>
-              <button style={{...S.typeBtn,...(choreForm.type==="shared"?S.typeBtnActive:{})}}
-                onClick={() => setChoreForm(f=>({...f,type:"shared"}))}>Shared (first wins)</button>
-            </div>
-            {choreForm.type === "personal" && (
-              <>
-                <label style={S.label}>Assign to</label>
-                <div style={S.typeRow}>
-                  {KIDS.map(k => (
-                    <button key={k.name} style={{...S.typeBtn,...(choreForm.assignedTo===k.name?{...S.typeBtnActive,background:k.color+"33",borderColor:k.color,color:k.color}:{})}}
-                      onClick={() => setChoreForm(f=>({...f,assignedTo:k.name}))}>{k.name}</button>
-                  ))}
-                </div>
-              </>
-            )}
-            <button style={{...S.saveChoreBtn,opacity:loading?0.7:1}} onClick={handleSaveChore} disabled={loading}>
-              {loading?"Saving…":editingChore?"Save Changes":"Add Chore"}
-            </button>
-          </div>
-        )}
-
-        <div style={S.choreList}>
-          {chores.map(chore => (
-            <div key={chore.id} style={S.choreManageCard}>
-              <div style={S.choreManageLeft}>
-                <div style={S.choreManageEmoji}>{chore.emoji || "🏠"}</div>
-                <div>
-                  <div style={S.choreManageName}>{chore.name}</div>
-                  <div style={S.choreManageMeta}>
-                    {chore.type==="shared" ? "Shared · First to do it wins" : `Personal · ${chore.assignedTo}`}
-                  </div>
-                </div>
-              </div>
-              <div style={S.choreManageRight}>
-                <div style={S.pointsBadge}>{chore.points} pts</div>
-                <button style={S.editIconBtn} onClick={() => handleEditChore(chore)}>✏️</button>
-                <button style={S.deleteIconBtn} onClick={() => handleDeleteChore(chore.id)}>🗑️</button>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div style={{height:20}} />
-      </div>
-    </div>
-  );
-
   // ── KID VIEW ──
   if (kid) {
     const streak = streaks[kidEmail] || 0;
     const ptsToGo = Math.max(0, POINTS_FOR_REWARD - kidPoints);
-
     return (
       <div style={S.root}>
         {toast && <div style={{...S.toast,...(toast.type==="error"?S.toastErr:toast.type==="info"?S.toastInfo:{})}}>{toast.msg}</div>}
         <input type="file" accept="image/*" capture="environment" ref={fileRef} style={{display:"none"}} onChange={handlePhotoSelected} />
-
         <header style={S.header}>
           <div style={S.headerRow}>
             <div style={S.kidGreeting}>Hey {kid.name}! 👋</div>
             <button style={S.signOutBtn} onClick={handleSignOut}>Sign out</button>
           </div>
         </header>
-
         <main style={S.main}>
-          {/* Points card */}
           <div style={{...S.pointsCard, borderColor: kid.color+"44"}}>
             <div style={S.pointsCardTop}>
               <div>
@@ -454,7 +425,6 @@ export default function App() {
             <div style={S.progressLabel}>{kidPoints} / {POINTS_FOR_REWARD} pts</div>
           </div>
 
-          {/* Streak */}
           {streak > 0 && (
             <div style={S.streakCard}>
               <span style={{fontSize:24}}>🔥</span>
@@ -466,11 +436,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Today's chores */}
           <div style={S.sectionTitle}>Today's Chores</div>
-          {myChores.length === 0 && (
-            <div style={S.emptyChores}>No chores assigned yet — check back soon!</div>
-          )}
+          {myChores.length === 0 && <div style={S.emptyChores}>No chores assigned yet — check back soon!</div>}
           {myChores.map(chore => {
             const status = choreStatus(chore.id);
             const comp = todayCompletions.find(c => c.choreId === chore.id);
@@ -482,9 +449,7 @@ export default function App() {
                     <div style={{...S.choreEmoji,...(status==="claimed"?{opacity:0.4}:{})}}>{chore.emoji||"🏠"}</div>
                     <div>
                       <div style={{...S.choreName,...(status==="claimed"?{opacity:0.4}:{})}}>{chore.name}</div>
-                      <div style={S.choreMeta}>
-                        {chore.type==="shared" ? "Shared · First to do it wins" : "Personal daily chore"}
-                      </div>
+                      <div style={S.choreMeta}>{chore.type==="shared" ? "Shared · First to do it wins" : "Personal daily chore"}</div>
                       {status === "claimed" && <div style={S.claimedTag}>Completed by {claimedByName}</div>}
                       {status === "pending" && <div style={S.pendingTagKid}>⏳ Awaiting approval</div>}
                     </div>
@@ -493,12 +458,10 @@ export default function App() {
                     {chore.points} pts
                   </div>
                 </div>
-
                 {status === "available" && (
                   <div style={S.choreActions}>
                     <button style={{...S.markDoneBtn,background:kid.color,opacity:photoUploading===chore.id?0.6:1}}
-                      onClick={() => handleMarkDone(chore.id)}
-                      disabled={photoUploading===chore.id}>
+                      onClick={() => handleMarkDone(chore.id)} disabled={photoUploading===chore.id}>
                       {photoUploading===chore.id ? "Uploading…" : "Mark as done"}
                     </button>
                     <button style={S.cameraBtn} onClick={() => handleMarkDone(chore.id)}>📷</button>
@@ -516,7 +479,6 @@ export default function App() {
     );
   }
 
-  // Unrecognised account
   return (
     <div style={S.root}>
       <div style={{padding:40,textAlign:"center",color:"#9ca3af"}}>
